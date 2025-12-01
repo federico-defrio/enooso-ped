@@ -1,5 +1,7 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { Calendar, ChevronLeft, ChevronRight, Plus, Trash2, ExternalLink, X, AlertTriangle, Image, MessageCircle, CheckSquare, Square, Filter, List, Grid, Send, Clock, ZoomIn, ZoomOut, Upload, Palette, PenTool, Video, ClipboardList, Leaf, Camera, Smartphone, BarChart3, Link, MessageSquare, Save, Copy, Tag, Flag, History, ChevronDown, ChevronUp, AlertCircle, Sparkles, Play, Images, Film } from 'lucide-react';
+import { fetchPosts, createPost, updatePost, deletePost } from './supabase';
+import { initEmailJS, sendNotificationEmail } from './emailService';
 
 // Platform Icons
 const InstagramIcon = () => (
@@ -145,19 +147,57 @@ export default function PianoEditorialeEnooso() {
   const [showHistory, setShowHistory] = useState(false);
   const [newTag, setNewTag] = useState('');
   const [toast, setToast] = useState(null);
+  const [loading, setLoading] = useState(true);
   const draggedPostRef = useRef(null);
   const fileInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const carouselInputRef = useRef(null);
+
+  useEffect(() => {
+    initEmailJS();
+    loadPosts();
+  }, []);
+
+  const loadPosts = async () => {
+    setLoading(true);
+    const data = await fetchPosts();
+    if (data && data.length > 0) {
+      const mappedPosts = data.map(p => ({
+        id: p.id,
+        date: p.date,
+        time: p.time || '12:00',
+        text: p.text || '',
+        image: p.image || '',
+        carousel: p.carousel || [],
+        video: p.video || '',
+        mediaType: p.media_type || 'image',
+        platforms: p.platforms || [],
+        status: p.status || 'idea',
+        priority: p.priority || 'media',
+        tags: p.tags || [],
+        driveLink: p.drive_link || '',
+        checklist: {
+          grafica: p.checklist_grafica || false,
+          testo: p.checklist_testo || false,
+          video: p.checklist_video || false
+        },
+        comments: p.comments || [],
+        history: p.history || []
+      }));
+      setPosts(mappedPosts);
+    }
+    setLoading(false);
+  };
 
   const showToast = (message) => {
     setToast(message);
     setTimeout(() => setToast(null), 4000);
   };
 
-  const sendNotification = (recipientId, type, postData) => {
+  const sendNotification = async (recipientId, type, postData) => {
     const recipient = teamMembers.find(m => m.id === recipientId);
     if (!recipient) return;
+    await sendNotificationEmail(recipientId, type, postData);
     showToast(`📧 Notifica inviata a ${recipient.name}`);
   };
 
@@ -239,20 +279,41 @@ export default function PianoEditorialeEnooso() {
     };
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!editingPost) return;
     
     let updatedPost = editingPost;
+    
+    // Check if it's an existing database post (UUID format) or local/demo post
+    const isDbPost = editingPost.id && !editingPost.id.startsWith('post-') && !editingPost.id.startsWith('demo');
     
     if (editingPost.id) {
       const originalPost = posts.find(p => p.id === editingPost.id);
       if (originalPost && originalPost.status !== editingPost.status) {
         updatedPost = addHistoryEntry(updatedPost, `Status: ${statusConfig[originalPost.status]?.label} → ${statusConfig[editingPost.status]?.label}`);
       }
-      setPosts(posts.map(p => p.id === editingPost.id ? updatedPost : p));
+      
+      if (isDbPost) {
+        // Update in database
+        const success = await updatePost(editingPost.id, updatedPost);
+        if (success) {
+          setPosts(posts.map(p => p.id === editingPost.id ? updatedPost : p));
+        }
+      } else {
+        // Local post update
+        setPosts(posts.map(p => p.id === editingPost.id ? updatedPost : p));
+      }
     } else {
-      updatedPost = { ...editingPost, id: `post-${Date.now()}` };
-      setPosts([...posts, updatedPost]);
+      // Create new post
+      const created = await createPost(editingPost);
+      if (created) {
+        updatedPost = { ...editingPost, id: created.id };
+        setPosts([...posts, updatedPost]);
+      } else {
+        // Fallback to local
+        updatedPost = { ...editingPost, id: `post-${Date.now()}` };
+        setPosts([...posts, updatedPost]);
+      }
     }
     
     if (updatedPost.status !== 'idea') {
@@ -273,8 +334,12 @@ export default function PianoEditorialeEnooso() {
     showToast('✅ Post salvato!');
   };
 
-  const handleDelete = (id, e) => {
+  const handleDelete = async (id, e) => {
     if (e) e.stopPropagation();
+    const isDbPost = id && !id.startsWith('post-') && !id.startsWith('demo');
+    if (isDbPost) {
+      await deletePost(id);
+    }
     setPosts(posts.filter(p => p.id !== id));
     if (editingPost?.id === id) setEditingPost(null);
     showToast('🗑️ Post eliminato');
